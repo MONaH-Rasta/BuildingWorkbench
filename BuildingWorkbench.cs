@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.2.2")]
+    [Info("Building Workbench", "MJSU", "1.2.3")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -29,7 +29,7 @@ namespace Oxide.Plugins
         private readonly List<ulong> _notifiedPlayer = new List<ulong>();
         private readonly Hash<ulong, Hash<uint, BuildingData>> _playerData = new Hash<ulong, Hash<uint, BuildingData>>();
         private readonly Hash<uint, BuildingData> _buildingData = new Hash<uint, BuildingData>();
-
+        
         //private static BuildingWorkbench _ins;
         #endregion
 
@@ -206,6 +206,8 @@ namespace Oxide.Plugins
 
             UpdatePlayerWorkbenchLevel(player);
             
+            //_ins.Puts($"{nameof(BuildingData)}.{nameof(UpdatePlayerPriv)} {player.displayName} In: {string.Join(",", currentBuildings.Select(b => b.ToString().ToArray()))} Left: {string.Join(",", leftBuildings.Select(b => b.ToString().ToArray()))}");
+            
             Pool.FreeList(ref currentBuildings);
             Pool.FreeList(ref leftBuildings);
         }
@@ -220,6 +222,8 @@ namespace Oxide.Plugins
 
         public void OnPlayerLeftBuilding(BasePlayer player, uint buildingId)
         {
+            BuildingData building = GetBuildingData(buildingId);
+            building.LeaveBuilding(player);
             Hash<uint, BuildingData> playerBuildings = GetPlayerData(player.userID);
             if (!playerBuildings.Remove(buildingId))
             {
@@ -346,6 +350,8 @@ namespace Oxide.Plugins
                 return;
             }
             
+            //_ins.Puts($"{nameof(BuildingWorkbench)}.{nameof(OnEntityLeave)} {nameof(BuildingWorkbenchTrigger)} {player.displayName}");
+            
             NextTick(() =>
             {
                 player.EnterTrigger(_tb);
@@ -387,6 +393,8 @@ namespace Oxide.Plugins
                 return;
             }
 
+            //_ins.Puts($"{nameof(BuildingWorkbench)}.{nameof(UpdatePlayerWorkbenchLevel)} {player.displayName} -> {level}");
+            player.nextCheckTime = float.MaxValue;
             player.cachedCraftLevel = level;
             player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench1, player.cachedCraftLevel == 1f);
             player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench2, player.cachedCraftLevel == 2f);
@@ -417,12 +425,12 @@ namespace Oxide.Plugins
 
             return data;
         }
-        
+
         public void GetNearbyAuthorizedBuildings(BasePlayer player, List<uint> authorizedPrivs)
         {
             List<uint> processedBuildings = Pool.GetList<uint>();
             OBB obb = player.WorldSpaceBounds();
-            List<BuildingBlock> blocks = Facepunch.Pool.GetList<BuildingBlock>();
+            List<BuildingBlock> blocks = Pool.GetList<BuildingBlock>();
             float baseDistance = _pluginConfig.BaseDistance;
             Vis.Entities(obb.position, baseDistance + obb.extents.magnitude, blocks, Rust.Layers.Construction);
             for (int index = 0; index < blocks.Count; index++)
@@ -471,11 +479,14 @@ namespace Oxide.Plugins
 
             public void EnterBuilding(BasePlayer player)
             {
+                //_ins.Puts($"{nameof(BuildingData)}.{nameof(EnterBuilding)} {player.displayName}");
                 Players.Add(player);
             }
 
             public void LeaveBuilding(BasePlayer player)
             {
+               
+                //_ins.Puts($"{nameof(BuildingData)}.{nameof(LeaveBuilding)} {player.displayName}");
                 Players.Remove(player);
             }
 
