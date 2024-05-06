@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.0.6")]
+    [Info("Building Workbench", "MJSU", "1.0.7")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -67,7 +67,7 @@ namespace Oxide.Plugins
             
             foreach (BasePlayer player in BasePlayer.activePlayerList)
             {
-                OnPlayerInit(player);
+                OnPlayerConnected(player);
             }
             
             InvokeHandler.Instance.InvokeRepeating(StartUpdatingWorkbench, 1f, _pluginConfig.UpdateRate);
@@ -75,7 +75,7 @@ namespace Oxide.Plugins
             _init = true;
         }
 
-        private void OnPlayerInit(BasePlayer player)
+        private void OnPlayerConnected(BasePlayer player)
         {
             if (player.triggers == null || !player.triggers.Contains(_triggerBase))
             {
@@ -247,6 +247,11 @@ namespace Oxide.Plugins
 
         private void OnEntityKill(Workbench bench)
         {
+            if (!_init)
+            {
+                return;
+            }
+            
             UpdateNearbyPlayers(bench.transform.position, bench.buildingID);
         }
         
