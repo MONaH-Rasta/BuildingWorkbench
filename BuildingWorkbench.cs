@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.3.3")]
+    [Info("Building Workbench", "MJSU", "1.4.0")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -28,9 +28,9 @@ namespace Oxide.Plugins
         private const string CancelCraftPermission = "buildingworkbench.cancelcraft";
         private const string AccentColor = "#de8732";
 
-        private readonly List<ulong> _notifiedPlayer = new List<ulong>();
-        private readonly Hash<ulong, PlayerData> _playerData = new Hash<ulong, PlayerData>();
-        private readonly Hash<uint, BuildingData> _buildingData = new Hash<uint, BuildingData>();
+        private readonly List<ulong> _notifiedPlayer = new();
+        private readonly Hash<ulong, PlayerData> _playerData = new();
+        private readonly Hash<uint, BuildingData> _buildingData = new();
 
         private PhysicsScene _physics;
         
@@ -199,8 +199,15 @@ namespace Oxide.Plugins
         public void UpdatePlayerBuildings(BasePlayer player, PlayerData data)
         {
             List<uint> currentBuildings = Pool.GetList<uint>();
-            
-            GetNearbyAuthorizedBuildings(player, currentBuildings);
+
+            if (_pluginConfig.FastBuildingCheck)
+            {
+                GetNearbyAuthorizedBuildingsFast(player, currentBuildings);
+            }
+            else
+            {
+                GetNearbyAuthorizedBuildings(player, currentBuildings);
+            }
 
             List<uint> leftBuildings = Pool.GetList<uint>();
             foreach (uint buildingId in data.BuildingData.Keys)
@@ -211,19 +218,21 @@ namespace Oxide.Plugins
                 }
             }
 
-            foreach (uint leftBuilding in leftBuildings)
+            for (int index = 0; index < leftBuildings.Count; index++)
             {
+                uint leftBuilding = leftBuildings[index];
                 OnPlayerLeftBuilding(player, leftBuilding);
             }
-            
-            foreach (uint currentBuilding in currentBuildings)
+
+            for (int index = 0; index < currentBuildings.Count; index++)
             {
+                uint currentBuilding = currentBuildings[index];
                 if (!data.BuildingData.ContainsKey(currentBuilding))
                 {
                     OnPlayerEnterBuilding(player, currentBuilding);
                 }
             }
-            
+
             UpdatePlayerWorkbenchLevel(player);
             
             //Puts($"{nameof(BuildingData)}.{nameof(UpdatePlayerPriv)} {player.displayName} In: {string.Join(",", currentBuildings.Select(b => b.ToString().ToArray()))} Left: {string.Join(",", leftBuildings.Select(b => b.ToString().ToArray()))}");
@@ -351,22 +360,21 @@ namespace Oxide.Plugins
         
         private void OnEntityEnter(TriggerWorkbench trigger, BasePlayer player)
         {
-            if (player.IsNpc)
+            if (!player.IsNpc)
             {
-                return;
+                UpdatePlayerWorkbenchLevel(player);
             }
-
-            UpdatePlayerWorkbenchLevel(player);
         }
         
         private void OnEntityLeave(TriggerWorkbench trigger, BasePlayer player)
         {
-            if (player.IsNpc)
+            if (!player.IsNpc)
             {
-                return;
+                NextTick(() =>
+                {
+                    UpdatePlayerWorkbenchLevel(player);
+                });
             }
-            
-            UpdatePlayerWorkbenchLevel(player);
         }
         
         private void OnEntityLeave(BuildingWorkbenchTrigger trigger, BasePlayer player)
@@ -388,8 +396,9 @@ namespace Oxide.Plugins
         #region Helper Methods
         public void UpdateBuildingPlayers(BuildingData building)
         {
-            foreach (BasePlayer player in building.Players)
+            for (int index = 0; index < building.Players.Count; index++)
             {
+                BasePlayer player = building.Players[index];
                 UpdatePlayerWorkbenchLevel(player);
             }
         }
@@ -456,9 +465,44 @@ namespace Oxide.Plugins
             return data;
         }
 
+        private readonly RaycastHit[] _hits = new RaycastHit[256];
+        private readonly List<uint> _processedBuildings = new();
+        
+        public void GetNearbyAuthorizedBuildingsFast(BasePlayer player, List<uint> authorizedPrivs)
+        {
+            List<uint> processedBuildings = _processedBuildings;
+            OBB obb = player.WorldSpaceBounds();
+            float baseDistance = _pluginConfig.BaseDistance;
+            float halfBaseDistance = baseDistance / 2f;
+            int amount = _physics.Raycast(player.transform.position + Vector3.down * halfBaseDistance, Vector3.up, _hits, baseDistance, Rust.Layers.Construction, QueryTriggerInteraction.Ignore);
+            for (int index = 0; index < amount; index++)
+            {
+                BuildingBlock block = _hits[index].transform.ToBaseEntity() as BuildingBlock;
+                if (!block)
+                {
+                    continue;
+                }
+                
+                if (processedBuildings.Contains(block.buildingID) || obb.Distance(block.WorldSpaceBounds()) > baseDistance)
+                {
+                    continue;
+                }
+                
+                processedBuildings.Add(block.buildingID);
+                BuildingPrivlidge priv = block.GetBuilding()?.GetDominatingBuildingPrivilege();
+                if (!priv || !priv.IsAuthed(player))
+                {
+                    continue;
+                }
+                
+                authorizedPrivs.Add(priv.buildingID);
+            }
+            processedBuildings.Clear();
+        }
+        
         public void GetNearbyAuthorizedBuildings(BasePlayer player, List<uint> authorizedPrivs)
         {
-            List<uint> processedBuildings = Pool.GetList<uint>();
+            List<uint> processedBuildings = _processedBuildings;
             OBB obb = player.WorldSpaceBounds();
             float baseDistance = _pluginConfig.BaseDistance;
             int amount = _physics.OverlapSphere(obb.position, baseDistance + obb.extents.magnitude, Vis.colBuffer, Rust.Layers.Construction, QueryTriggerInteraction.Ignore);
@@ -486,7 +530,7 @@ namespace Oxide.Plugins
                 authorizedPrivs.Add(priv.buildingID);
             }
 
-            Pool.FreeList(ref processedBuildings);
+            processedBuildings.Clear();
         }
 
         public void Chat(BasePlayer player, string message) => PrintToChat(player, Lang(LangKeys.Chat, player, message));
@@ -517,7 +561,7 @@ namespace Oxide.Plugins
         {
             public uint BuildingId { get; }
             public Workbench BestWorkbench { get; set; }
-            public List<BasePlayer> Players { get; } = new List<BasePlayer>();
+            public List<BasePlayer> Players { get; } = new();
             public List<Workbench> Workbenches { get; }
 
             public BuildingData(uint buildingId)
@@ -591,6 +635,10 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Inside building check frequency (Seconds)")]
             public float UpdateRate { get; set; }
             
+            [DefaultValue(false)]
+            [JsonProperty(PropertyName = "Enable Fast Building Check (Only checks above and below a player)")]
+            public bool FastBuildingCheck { get; set; }
+            
             [DefaultValue(16f)]
             [JsonProperty(PropertyName = "Distance from base to be considered inside building (Meters)")]
             public float BaseDistance { get; set; }
@@ -603,7 +651,7 @@ namespace Oxide.Plugins
         public class PlayerData
         {
             public Vector3 Position { get; set; }
-            public Hash<uint, BuildingData> BuildingData { get; } = new Hash<uint, BuildingData>();
+            public Hash<uint, BuildingData> BuildingData { get; } = new();
         }
 
         private class LangKeys
