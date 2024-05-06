@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using Newtonsoft.Json;
@@ -7,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.0.3")]
+    [Info("Building Workbench", "MJSU", "1.0.4")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -24,7 +25,10 @@ namespace Oxide.Plugins
 
         private readonly List<ulong> _notifiedPlayer = new List<ulong>();
         private readonly Hash<uint, BuildingData> _buildingData = new Hash<uint, BuildingData>();
+        private readonly Hash<ulong, uint> _playerBuilding = new Hash<ulong, uint>();
 
+        private Coroutine _routine;
+        
         private static BuildingWorkbench _ins;
 
         private bool _init;
@@ -35,9 +39,6 @@ namespace Oxide.Plugins
         {
             _ins = this;
             permission.RegisterPermission(UsePermission, this);
-
-            _object = new GameObject("BuildingWorkbenchObject");
-            _triggerBase = _object.AddComponent<TriggerBase>();
         }
         
         protected override void LoadDefaultMessages()
@@ -64,9 +65,13 @@ namespace Oxide.Plugins
 
         private void OnServerInitialized()
         {
+             _object = new GameObject("BuildingWorkbenchObject");
+             _triggerBase = _object.AddComponent<TriggerBase>();
+            
             foreach (Workbench workbench in GameObject.FindObjectsOfType<Workbench>())
             {
-                AddWorkbench(workbench);
+                BuildingData data = GetBuildingData(workbench.buildingID);
+                data.AddWorkbench(workbench);
             }
             
             foreach (BasePlayer player in BasePlayer.activePlayerList)
@@ -74,139 +79,117 @@ namespace Oxide.Plugins
                 OnPlayerInit(player);
             }
             
+            InvokeHandler.Instance.InvokeRepeating(StartUpdatingWorkbench, 1f, _pluginConfig.UpdateRate);
+            
             _init = true;
         }
 
         private void OnPlayerInit(BasePlayer player)
         {
-            if (!HasPermission(player, UsePermission))
-            {
-                return;
-            }
-
-            if (player.GetComponent<WorkbenchBehavior>() != null)
-            {
-                return;
-            }
-
-            if (!player.triggers?.Contains(_triggerBase) ?? false)
+            if (player.triggers == null || !player.triggers.Contains(_triggerBase))
             {
                 player.EnterTrigger(_triggerBase);
             }
-
-            player.gameObject.AddComponent<WorkbenchBehavior>();
         }
 
         private void OnPlayerDisconnected(BasePlayer player, string reason)
         {
-            player.gameObject.GetComponent<WorkbenchBehavior>()?.DoDestroy();
             player.LeaveTrigger(_triggerBase);
         }
 
         private void Unload()
         {
-            foreach (WorkbenchBehavior behavior in GameObject.FindObjectsOfType<WorkbenchBehavior>())
+            foreach (BasePlayer player in BasePlayer.activePlayerList)
             {
-                behavior.DoDestroy();
+                player.LeaveTrigger(_triggerBase);
             }
+            
+            InvokeHandler.Instance.CancelInvoke(StartUpdatingWorkbench);
+            if (_routine != null)
+            {
+                InvokeHandler.Instance.StopCoroutine(_routine);
+            }
+            
             GameObject.Destroy(_object);
             _ins = null;
         }
         #endregion
 
-        #region Permission Hooks
-        private void OnUserPermissionGranted(string playerId, string permName)
+        #region Workbench Handler
+
+        private void StartUpdatingWorkbench()
         {
-            if (permName != UsePermission)
+            if (BasePlayer.activePlayerList.Count == 0)
             {
                 return;
             }
             
-            HandleUserChanges(playerId);
+            _routine = InvokeHandler.Instance.StartCoroutine(HandleWorkbenchUpdate());
         }
-        
-        private void OnUserPermissionRevoked(string playerId, string permName)
+
+        private IEnumerator HandleWorkbenchUpdate()
         {
-            if (permName != UsePermission)
+            for (int i = 0; i < BasePlayer.activePlayerList.Count; i++)
             {
+                BasePlayer player = BasePlayer.activePlayerList[0];
+                yield return null;
+
+                if (!HasPermission(player, UsePermission))
+                {
+                    continue;
+                }
+                
+                UpdatePlayerPriv(player);
+            }
+        }
+
+        private void UpdatePlayerPriv(BasePlayer player)
+        {
+            BuildingPrivlidge priv = player.GetBuildingPrivilege();
+            uint prevBuilding = _playerBuilding[player.userID];
+            if (priv == null || prevBuilding == 0 || priv.buildingID != prevBuilding)
+            {
+                BuildingData prevData = GetBuildingData(prevBuilding);
+                prevData.RemovePlayer(player);
+            }
+            
+            if (priv == null || !priv.IsAuthed(player))
+            {
+                UpdatePlayerBench(player, 0);
                 return;
             }
             
-            HandleUserChanges(playerId);
-        }
-        
-        private void OnUserGroupAdded(string playerId, string groupName)
-        {
-            HandleUserChanges(playerId);
-        }
-        
-        private void OnUserGroupRemoved(string playerId, string groupName)
-        {
-            HandleUserChanges(playerId);
-        }
-
-        private void OnGroupPermissionGranted(string groupName, string permName)
-        {
-            if (permName != UsePermission)
+            BuildingData data = GetBuildingData(priv.buildingID);
+            if (prevBuilding != priv.buildingID)
             {
-                return;
-            }
-
-            NextTick(() =>
-            {
-                foreach (BasePlayer player in BasePlayer.activePlayerList)
-                {
-                    HandleUserChanges(player);
-                }
-            });
-        }
-        
-        private void OnGroupPermissionRevoked(string groupName, string permName)
-        {
-            if (permName != UsePermission)
-            {
-                return;
+                _playerBuilding[player.userID] = priv.buildingID;
+                data.AddPlayer(player);
             }
             
-            NextTick(() =>
-            {
-                foreach (BasePlayer player in BasePlayer.activePlayerList)
-                {
-                    HandleUserChanges(player);
-                }
-            });
+            UpdatePlayerBench(player, data.WorkbenchLevel);
         }
 
-        private void HandleUserChanges(string id)
+        private void UpdatePlayerBench(BasePlayer player, int level)
         {
-            NextTick(() =>
-            {
-                BasePlayer player = BasePlayer.Find(id);
-                if (player == null)
-                {
-                    return;
-                }
-
-                HandleUserChanges(player);
-            });
+            player.nextCheckTime = Time.realtimeSinceStartup + _ins._pluginConfig.UpdateRate + 1f;
+            player.cachedCraftLevel = level;
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench1, level == 1);
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench2, level == 2);
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench3, level == 3);
+            player.SendNetworkUpdateImmediate();
         }
 
-        private void HandleUserChanges(BasePlayer player)
+        private void UpdateBuildingPlayers(BuildingData data, BasePlayer player = null)
         {
-            bool hasPerm = HasPermission(player, UsePermission);
-            bool hasBehavior = player.GetComponent<WorkbenchBehavior>() != null;
-            if (hasPerm == hasBehavior)
+            int level = data.WorkbenchLevel;
+            foreach (BasePlayer buildingPlayer in data.BuildingPlayers)
             {
-                return;
+                UpdatePlayerBench(buildingPlayer, level);
             }
 
-            if (hasBehavior)
+            if (player != null)
             {
-                OnPlayerDisconnected(player, string.Empty);
-            }
-            else
-            {
-                OnPlayerInit(player);
+                UpdatePlayerBench(player, level);
             }
         }
         #endregion
@@ -227,41 +210,30 @@ namespace Oxide.Plugins
             {
                 return;
             }
-
+            
             BasePlayer player = BasePlayer.FindByID(bench.OwnerID);
             if (player == null)
             {
                 return;
             }
 
-            AddWorkbench(bench);
-            
-            List<WorkbenchBehavior> behaviors = GetBuildingData(bench.buildingID).Behaviors;
-            for (int i = behaviors.Count - 1; i >= 0; i--)
-            {
-                behaviors[i].OnWorkbenchChanged();
-            }
+            BuildingData data = GetBuildingData(bench.buildingID);
+            data.AddWorkbench(bench);
 
-            WorkbenchBehavior benchBehavior = player.GetComponent<WorkbenchBehavior>();
-            if (benchBehavior == null)
-            {
-                return;
-            }
-            
-            benchBehavior.OnWorkbenchChanged();
+            UpdateBuildingPlayers(data, player);
 
             if (!_pluginConfig.EnableNotifications)
             {
                 return;
             }
-
+            
             if (_notifiedPlayer.Contains(player.userID))
             {
                 return;
             }
-
+            
             _notifiedPlayer.Add(player.userID);
-
+            
             if (GameTipAPI == null)
             {
                 Chat(player, Lang(LangKeys.Notification, player));
@@ -274,7 +246,9 @@ namespace Oxide.Plugins
 
         private void OnEntityKill(Workbench bench)
         {
-            RemoveWorkbench(bench);
+            BuildingData data = GetBuildingData(bench.buildingID);
+            data.RemoveWorkbench(bench);
+            UpdateBuildingPlayers(data);
         }
         
         private void OnCupboardAuthorize(BuildingPrivlidge privilege, BasePlayer player)
@@ -291,7 +265,7 @@ namespace Oxide.Plugins
         {
             NextTick(() =>
             {
-                player.GetComponent<WorkbenchBehavior>()?.OnAuthChanged();
+                UpdatePlayerPriv(player);
             });
         }
 
@@ -299,150 +273,17 @@ namespace Oxide.Plugins
         {
             NextTick(() =>
             {
-                player.GetComponent<WorkbenchBehavior>()?.OnAuthChanged();
-
-                List<WorkbenchBehavior> behaviors = GetBuildingData(privilege.buildingID).Behaviors;
-                for (int i = behaviors.Count - 1; i >= 0; i--)
+                UpdatePlayerPriv(player);
+                List<BasePlayer> players = GetBuildingData(privilege.buildingID).BuildingPlayers;
+                for (int i = players.Count - 1; i >= 0; i--)
                 {
-                    behaviors[i].OnAuthChanged();
+                    UpdatePlayerPriv(players[i]);
                 }
             });
         }
         #endregion
 
-        #region Behavior
-        private class WorkbenchBehavior : FacepunchBehaviour
-        {
-            private BasePlayer Player { get; set; }
-            private bool IsInsideBuildingPrivilege { get; set; }
-            private uint BuildingId { get; set; }
-            private bool ForceUpdate { get; set; }
-
-            private void Awake()
-            {
-                enabled = false;
-                Player = GetComponent<BasePlayer>();
-                InvokeRepeating(CheckInsideBuildingPrivilege, 1f, _ins._pluginConfig.InsideBuildingPrivilegeInterval);
-            }
-
-            public void OnAuthChanged()
-            {
-                CheckInsideBuildingPrivilege();
-                ForceUpdatePlayer();
-            }
-            
-            public void OnWorkbenchChanged()
-            {
-                ForceUpdatePlayer();
-            }
-
-            private void ForceUpdatePlayer()
-            {
-                ForceUpdate = true;
-                UpdatePlayerWorkbenchLevel();
-            }
-
-            private void CheckInsideBuildingPrivilege()
-            {
-                BuildingPrivlidge priv = Player.GetBuildingPrivilege();
-                bool isAuthed = priv?.IsAuthed(Player) ?? false;
-                
-                if (!IsInsideBuildingPrivilege && isAuthed)
-                {
-                    IsInsideBuildingPrivilege = true;
-                    BuildingId = priv.buildingID;
-                    _ins.AddBuilding(BuildingId, this);
-                    InvokeRandomized(UpdatePlayerWorkbenchLevel, 0, _ins._pluginConfig.UpdateWorkbenchLevelInterval, 0.1f);
-                    //_ins.Puts($" Activating {_workbenchLevel}");
-                }
-                else if (IsInsideBuildingPrivilege && !isAuthed)
-                {
-                    IsInsideBuildingPrivilege = false;
-                    _ins.RemoveBuilding(BuildingId, this);
-                    BuildingId = 0;
-                    CancelInvoke(UpdatePlayerWorkbenchLevel);
-                    ForceUpdatePlayer();
-                    //_ins.Puts("Deactivating");
-                }
-
-                if (isAuthed && priv.buildingID != BuildingId)
-                {
-                    _ins.RemoveBuilding(BuildingId, this);
-                    BuildingId = priv.buildingID;
-                    _ins.AddBuilding(BuildingId, this);
-                }
-            }
-
-            private int GetBuildingWorkbenchLevel()
-            {
-                if (BuildingId == 0)
-                {
-                    return 0;
-                }
-
-                BuildingData buildingBenches = _ins.GetBuildingData(BuildingId);
-                return buildingBenches.Workbenches.Count == 0 ? 0 : buildingBenches.Workbenches.Max(b => b.Workbenchlevel);
-            }
-
-            private void UpdatePlayerWorkbenchLevel()
-            {
-                int workbenchLevel = GetBuildingWorkbenchLevel();
-                if (!ForceUpdate && (workbenchLevel <= 0 || !IsInsideBuildingPrivilege))
-                {
-                    return;
-                }
-
-                //_ins.Puts("Updating Level");
-                Player.nextCheckTime = Time.realtimeSinceStartup + _ins._pluginConfig.UpdateWorkbenchLevelInterval + .5f;
-
-                Player.cachedCraftLevel = workbenchLevel;
-
-                Player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench1, workbenchLevel == 1);
-                Player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench2, workbenchLevel == 2);
-                Player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench3, workbenchLevel == 3);
-                ForceUpdate = false;
-            }
-
-            public void DoDestroy()
-            {
-                _ins._buildingData[BuildingId]?.Behaviors.Remove(this);
-                Destroy(this);
-            }
-        }
-        #endregion
-
         #region Helper Methods
-
-        private void AddWorkbench(Workbench bench)
-        {
-            BuildingData data = GetBuildingData(bench.buildingID);
-            data.Workbenches.Add(bench);
-        }
-
-        private void RemoveWorkbench(Workbench bench)
-        {
-            BuildingData data = GetBuildingData(bench.buildingID);
-            data.Workbenches.Remove(bench);
-            
-            foreach (WorkbenchBehavior behavior in data.Behaviors)
-            {
-                behavior.OnWorkbenchChanged();
-            }
-        }
-
-        private void AddBuilding(uint buildingId, WorkbenchBehavior behavior)
-        {
-            BuildingData data = GetBuildingData(buildingId);
-            data.Workbenches = BuildingManager.server.GetBuilding(buildingId).decayEntities.OfType<Workbench>().ToList();
-            data.Behaviors.Add(behavior);
-        }
-        
-        private void RemoveBuilding(uint buildingId, WorkbenchBehavior behavior)
-        {
-            BuildingData data = GetBuildingData(buildingId);
-            data.Behaviors.Remove(behavior);
-        }
-
         private BuildingData GetBuildingData(uint buildingId)
         {
             BuildingData data = _buildingData[buildingId];
@@ -470,12 +311,8 @@ namespace Oxide.Plugins
             public bool EnableNotifications { get; set; }
             
             [DefaultValue(3f)]
-            [JsonProperty(PropertyName = "Inside Building Privilege Interval")]
-            public float InsideBuildingPrivilegeInterval { get; set; }
-
-            [DefaultValue(3f)]
-            [JsonProperty(PropertyName = "Update Workbench Level Interval")]
-            public float UpdateWorkbenchLevelInterval { get; set; }
+            [JsonProperty(PropertyName = "Update Rate (Seconds)")]
+            public float UpdateRate { get; set; }
         }
         
         private class LangKeys
@@ -487,7 +324,35 @@ namespace Oxide.Plugins
         private class BuildingData
         {
             public List<Workbench> Workbenches = new List<Workbench>();
-            public readonly List<WorkbenchBehavior> Behaviors = new List<WorkbenchBehavior>();
+            public readonly List<BasePlayer> BuildingPlayers = new List<BasePlayer>();
+
+            public int WorkbenchLevel => Workbenches.Count == 0 ? 0 : Workbenches.Max(w => w.Workbenchlevel);
+
+            public void AddPlayer(BasePlayer player)
+            {
+                if (!BuildingPlayers.Contains(player))
+                {
+                    BuildingPlayers.Add(player);
+                }
+            }
+
+            public void RemovePlayer(BasePlayer player)
+            {
+                BuildingPlayers.Remove(player);
+            }
+
+            public void AddWorkbench(Workbench bench)
+            {
+                if (!Workbenches.Contains(bench))
+                {
+                    Workbenches.Add(bench);
+                }
+            }
+
+            public void RemoveWorkbench(Workbench bench)
+            {
+                Workbenches.Remove(bench);
+            }
         }
         #endregion
     }
