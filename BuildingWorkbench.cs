@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.0.7")]
+    [Info("Building Workbench", "MJSU", "1.1.0")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -21,6 +21,7 @@ namespace Oxide.Plugins
         private GameObject _object;
 
         private const string UsePermission = "buildingworkbench.use";
+        private const string CancelCraftIgnorePermission = "buildingworkbench.cancraftignore";
         private const string AccentColor = "#de8732";
 
         private readonly List<ulong> _notifiedPlayer = new List<ulong>();
@@ -35,6 +36,7 @@ namespace Oxide.Plugins
         private void Init()
         {
             permission.RegisterPermission(UsePermission, this);
+            permission.RegisterPermission(CancelCraftIgnorePermission, this);
         }
         
         protected override void LoadDefaultMessages()
@@ -142,6 +144,7 @@ namespace Oxide.Plugins
                 if (_playerLevel[player.userID] != 0)
                 {
                     UpdatePlayerBench(player, 0, 0f);
+                    OnPlayerLeftBuilding(player);
                 }
                 
                 return;
@@ -195,6 +198,14 @@ namespace Oxide.Plugins
                     }
                 }
             });
+        }
+
+        private void OnPlayerLeftBuilding(BasePlayer player)
+        {
+            if (_pluginConfig.CancelCraft && !HasPermission(player, CancelCraftIgnorePermission))
+            {
+                player.inventory.crafting.CancelAll(true);
+            }
         }
         #endregion
 
@@ -310,6 +321,10 @@ namespace Oxide.Plugins
             [DefaultValue(true)]
             [JsonProperty(PropertyName = "Enable Notifications")]
             public bool EnableNotifications { get; set; }
+            
+            [DefaultValue(false)]
+            [JsonProperty(PropertyName = "Cancel craft when leaving building")]
+            public bool CancelCraft { get; set; }
             
             [DefaultValue(3f)]
             [JsonProperty(PropertyName = "Update Rate (Seconds)")]
