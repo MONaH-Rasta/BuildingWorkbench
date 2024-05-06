@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.0.5")]
+    [Info("Building Workbench", "MJSU", "1.0.6")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -285,11 +285,11 @@ namespace Oxide.Plugins
 
         private int GetBuildingWorkbenchLevel(uint buildingId)
         {
-            return BuildingManager.server.GetBuilding(buildingId).decayEntities
+            return BuildingManager.server.GetBuilding(buildingId)?.decayEntities
                 .OfType<Workbench>()
                 .Select(bench => bench.Workbenchlevel)
                 .Concat(new[] {0})
-                .Max();
+                .Max() ?? 0;
         }
 
         private void Chat(BasePlayer player, string format, params object[] args) => PrintToChat(player, Lang(LangKeys.Chat, player, format), args);
