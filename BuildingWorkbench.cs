@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.2.1")]
+    [Info("Building Workbench", "MJSU", "1.2.2")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -249,36 +249,40 @@ namespace Oxide.Plugins
         #region Oxide Hooks
         private void OnEntitySpawned(Workbench bench)
         {
-            BuildingData building = GetBuildingData(bench.buildingID);
-            building.OnBenchBuilt(bench);
-            UpdateBuildingPlayers(building);
-            
-            if (!_pluginConfig.BuiltNotification)
+            //Needs to be in NextTick since other plugins can spawn Workbenches
+            NextTick(() =>
             {
-                return;
-            }
+                BuildingData building = GetBuildingData(bench.buildingID);
+                building.OnBenchBuilt(bench);
+                UpdateBuildingPlayers(building);
             
-            BasePlayer player = BasePlayer.FindByID(bench.OwnerID);
-            if (player == null)
-            {
-                return;
-            }
+                if (!_pluginConfig.BuiltNotification)
+                {
+                    return;
+                }
             
-            if (_notifiedPlayer.Contains(player.userID))
-            {
-                return;
-            }
+                BasePlayer player = BasePlayer.FindByID(bench.OwnerID);
+                if (player == null)
+                {
+                    return;
+                }
             
-            _notifiedPlayer.Add(player.userID);
+                if (_notifiedPlayer.Contains(player.userID))
+                {
+                    return;
+                }
             
-            if (GameTipAPI == null)
-            {
-                Chat(player, Lang(LangKeys.Notification, player));
-            }
-            else
-            {
-                GameTipAPI.Call("ShowGameTip", player, Lang(LangKeys.Notification, player), 6f);
-            }
+                _notifiedPlayer.Add(player.userID);
+            
+                if (GameTipAPI == null)
+                {
+                    Chat(player, Lang(LangKeys.Notification, player));
+                }
+                else
+                {
+                    GameTipAPI.Call("ShowGameTip", player, Lang(LangKeys.Notification, player), 6f);
+                }
+            });
         }
 
         private void OnEntityKill(Workbench bench)
