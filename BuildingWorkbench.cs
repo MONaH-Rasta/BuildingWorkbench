@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.0.4")]
+    [Info("Building Workbench", "MJSU", "1.0.5")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -24,12 +24,9 @@ namespace Oxide.Plugins
         private const string AccentColor = "#de8732";
 
         private readonly List<ulong> _notifiedPlayer = new List<ulong>();
-        private readonly Hash<uint, BuildingData> _buildingData = new Hash<uint, BuildingData>();
-        private readonly Hash<ulong, uint> _playerBuilding = new Hash<ulong, uint>();
+        private readonly Hash<ulong, int> _playerLevel = new Hash<ulong, int>();
 
         private Coroutine _routine;
-        
-        private static BuildingWorkbench _ins;
 
         private bool _init;
         #endregion
@@ -37,7 +34,6 @@ namespace Oxide.Plugins
         #region Setup & Loading
         private void Init()
         {
-            _ins = this;
             permission.RegisterPermission(UsePermission, this);
         }
         
@@ -68,11 +64,6 @@ namespace Oxide.Plugins
              _object = new GameObject("BuildingWorkbenchObject");
              _triggerBase = _object.AddComponent<TriggerBase>();
             
-            foreach (Workbench workbench in GameObject.FindObjectsOfType<Workbench>())
-            {
-                BuildingData data = GetBuildingData(workbench.buildingID);
-                data.AddWorkbench(workbench);
-            }
             
             foreach (BasePlayer player in BasePlayer.activePlayerList)
             {
@@ -111,7 +102,6 @@ namespace Oxide.Plugins
             }
             
             GameObject.Destroy(_object);
-            _ins = null;
         }
         #endregion
 
@@ -129,9 +119,10 @@ namespace Oxide.Plugins
 
         private IEnumerator HandleWorkbenchUpdate()
         {
+            Hash<uint, int> benchCache = new Hash<uint, int>();
             for (int i = 0; i < BasePlayer.activePlayerList.Count; i++)
             {
-                BasePlayer player = BasePlayer.activePlayerList[0];
+                BasePlayer player = BasePlayer.activePlayerList[i];
                 yield return null;
 
                 if (!HasPermission(player, UsePermission))
@@ -139,58 +130,71 @@ namespace Oxide.Plugins
                     continue;
                 }
                 
-                UpdatePlayerPriv(player);
+                UpdatePlayerPriv(player, benchCache);
             }
         }
 
-        private void UpdatePlayerPriv(BasePlayer player)
+        private void UpdatePlayerPriv(BasePlayer player, Hash<uint, int> cache = null)
         {
             BuildingPrivlidge priv = player.GetBuildingPrivilege();
-            uint prevBuilding = _playerBuilding[player.userID];
-            if (priv == null || prevBuilding == 0 || priv.buildingID != prevBuilding)
-            {
-                BuildingData prevData = GetBuildingData(prevBuilding);
-                prevData.RemovePlayer(player);
-            }
-            
             if (priv == null || !priv.IsAuthed(player))
             {
-                UpdatePlayerBench(player, 0);
+                if (_playerLevel[player.userID] != 0)
+                {
+                    UpdatePlayerBench(player, 0, 0f);
+                }
+                
                 return;
             }
-            
-            BuildingData data = GetBuildingData(priv.buildingID);
-            if (prevBuilding != priv.buildingID)
+
+            int level;
+            if (cache != null && cache.ContainsKey(priv.buildingID))
             {
-                _playerBuilding[player.userID] = priv.buildingID;
-                data.AddPlayer(player);
+                level = cache[priv.buildingID];
             }
-            
-            UpdatePlayerBench(player, data.WorkbenchLevel);
+            else
+            {
+                level = GetBuildingWorkbenchLevel(priv.buildingID);
+                if (cache != null)
+                {
+                    cache[priv.buildingID] = level;
+                }
+            }
+
+            UpdatePlayerBench(player, level, _pluginConfig.UpdateRate);
         }
 
-        private void UpdatePlayerBench(BasePlayer player, int level)
+        private void UpdatePlayerBench(BasePlayer player, int level, float checkOffset)
         {
-            player.nextCheckTime = Time.realtimeSinceStartup + _ins._pluginConfig.UpdateRate + 1f;
+            player.nextCheckTime = Time.realtimeSinceStartup + checkOffset + .5f;
             player.cachedCraftLevel = level;
             player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench1, level == 1);
             player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench2, level == 2);
             player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench3, level == 3);
             player.SendNetworkUpdateImmediate();
+            _playerLevel[player.userID] = level;
         }
 
-        private void UpdateBuildingPlayers(BuildingData data, BasePlayer player = null)
+        private void UpdateNearbyPlayers(Vector3 pos, uint buildingId, BasePlayer player = null)
         {
-            int level = data.WorkbenchLevel;
-            foreach (BasePlayer buildingPlayer in data.BuildingPlayers)
+            NextTick(() =>
             {
-                UpdatePlayerBench(buildingPlayer, level);
-            }
+                int level = GetBuildingWorkbenchLevel(buildingId);
+                float duration = level == 0 ? 0 : _pluginConfig.UpdateRate;
+                BuildingPrivlidge priv = BuildingManager.server.GetBuilding(buildingId)?.GetDominatingBuildingPrivilege();
+                if (priv == null)
+                {
+                    return;
+                }
 
-            if (player != null)
-            {
-                UpdatePlayerBench(player, level);
-            }
+                foreach (BasePlayer buildingPlayer in BaseNetworkable.GetConnectionsWithin(pos, 50f).Select(c => (BasePlayer)c.player))
+                {
+                    if (priv.IsAuthed(buildingPlayer))
+                    {
+                        UpdatePlayerBench(buildingPlayer, level, duration);
+                    }
+                }
+            });
         }
         #endregion
 
@@ -216,11 +220,8 @@ namespace Oxide.Plugins
             {
                 return;
             }
-
-            BuildingData data = GetBuildingData(bench.buildingID);
-            data.AddWorkbench(bench);
-
-            UpdateBuildingPlayers(data, player);
+            
+            UpdateNearbyPlayers(bench.transform.position, bench.buildingID, player);
 
             if (!_pluginConfig.EnableNotifications)
             {
@@ -246,9 +247,7 @@ namespace Oxide.Plugins
 
         private void OnEntityKill(Workbench bench)
         {
-            BuildingData data = GetBuildingData(bench.buildingID);
-            data.RemoveWorkbench(bench);
-            UpdateBuildingPlayers(data);
+            UpdateNearbyPlayers(bench.transform.position, bench.buildingID);
         }
         
         private void OnCupboardAuthorize(BuildingPrivlidge privilege, BasePlayer player)
@@ -273,29 +272,26 @@ namespace Oxide.Plugins
         {
             NextTick(() =>
             {
-                UpdatePlayerPriv(player);
-                List<BasePlayer> players = GetBuildingData(privilege.buildingID).BuildingPlayers;
-                for (int i = players.Count - 1; i >= 0; i--)
+                Hash<uint, int> cache = new Hash<uint, int>();
+                foreach (BasePlayer nearbyPlayers in BaseNetworkable.GetConnectionsWithin(privilege.transform.position, 50f).Select(c => (BasePlayer)c.player))
                 {
-                    UpdatePlayerPriv(players[i]);
+                    UpdatePlayerPriv(nearbyPlayers, cache);
                 }
             });
         }
         #endregion
 
         #region Helper Methods
-        private BuildingData GetBuildingData(uint buildingId)
-        {
-            BuildingData data = _buildingData[buildingId];
-            if (data == null)
-            {
-                data = new BuildingData();
-                _buildingData[buildingId] = data;
-            }
 
-            return data;
+        private int GetBuildingWorkbenchLevel(uint buildingId)
+        {
+            return BuildingManager.server.GetBuilding(buildingId).decayEntities
+                .OfType<Workbench>()
+                .Select(bench => bench.Workbenchlevel)
+                .Concat(new[] {0})
+                .Max();
         }
-        
+
         private void Chat(BasePlayer player, string format, params object[] args) => PrintToChat(player, Lang(LangKeys.Chat, player, format), args);
         
         private bool HasPermission(BasePlayer player, string perm) => permission.UserHasPermission(player.UserIDString, perm);
@@ -319,40 +315,6 @@ namespace Oxide.Plugins
         {
             public const string Chat = "Chat";
             public const string Notification = "Notification";
-        }
-
-        private class BuildingData
-        {
-            public List<Workbench> Workbenches = new List<Workbench>();
-            public readonly List<BasePlayer> BuildingPlayers = new List<BasePlayer>();
-
-            public int WorkbenchLevel => Workbenches.Count == 0 ? 0 : Workbenches.Max(w => w.Workbenchlevel);
-
-            public void AddPlayer(BasePlayer player)
-            {
-                if (!BuildingPlayers.Contains(player))
-                {
-                    BuildingPlayers.Add(player);
-                }
-            }
-
-            public void RemovePlayer(BasePlayer player)
-            {
-                BuildingPlayers.Remove(player);
-            }
-
-            public void AddWorkbench(Workbench bench)
-            {
-                if (!Workbenches.Contains(bench))
-                {
-                    Workbenches.Add(bench);
-                }
-            }
-
-            public void RemoveWorkbench(Workbench bench)
-            {
-                Workbenches.Remove(bench);
-            }
         }
         #endregion
     }
