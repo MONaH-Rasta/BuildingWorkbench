@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.1.1")]
+    [Info("Building Workbench", "MJSU", "1.1.2")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -44,7 +44,8 @@ namespace Oxide.Plugins
             lang.RegisterMessages(new Dictionary<string, string>
             {
                 [LangKeys.Chat] = $"<color=#bebebe>[<color={AccentColor}>{Title}</color>] {{0}}</color>",
-                [LangKeys.Notification] = "Your workbench range has been increased to work inside your building"
+                [LangKeys.Notification] = "Your workbench range has been increased to work inside your building",
+                [LangKeys.CraftCanceled] = "Your crafting has been canceled because you left the building"
             }, this);
         }
         
@@ -202,9 +203,13 @@ namespace Oxide.Plugins
 
         private void OnPlayerLeftBuilding(BasePlayer player)
         {
-            if (_pluginConfig.CancelCraft && !HasPermission(player, CancelCraftIgnorePermission))
+            if (_pluginConfig.CancelCraft && !HasPermission(player, CancelCraftIgnorePermission) && player.inventory.crafting.queue.Count != 0)
             {
                 player.inventory.crafting.CancelAll(true);
+                if (_pluginConfig.CancelCraftNotification)
+                {
+                    Chat(player, Lang(LangKeys.CraftCanceled, player));
+                }
             }
         }
         #endregion
@@ -326,6 +331,10 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Cancel craft when leaving building")]
             public bool CancelCraft { get; set; }
             
+            [DefaultValue(true)]
+            [JsonProperty(PropertyName = "Cancel craft notification")]
+            public bool CancelCraftNotification { get; set; }
+            
             [DefaultValue(3f)]
             [JsonProperty(PropertyName = "Update Rate (Seconds)")]
             public float UpdateRate { get; set; }
@@ -335,6 +344,7 @@ namespace Oxide.Plugins
         {
             public const string Chat = "Chat";
             public const string Notification = "Notification";
+            public const string CraftCanceled = "CraftCanceled";
         }
         #endregion
     }
