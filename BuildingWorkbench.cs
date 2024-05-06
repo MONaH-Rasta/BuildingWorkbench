@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.2.0")]
+    [Info("Building Workbench", "MJSU", "1.2.1")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -333,6 +333,19 @@ namespace Oxide.Plugins
             }
             
             UpdatePlayerWorkbenchLevel(player);
+        }
+        
+        private void OnEntityLeave(BuildingWorkbenchTrigger trigger, BasePlayer player)
+        {
+            if (player.IsNpc)
+            {
+                return;
+            }
+            
+            NextTick(() =>
+            {
+                player.EnterTrigger(_tb);
+            });
         }
         #endregion
 
