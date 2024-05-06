@@ -2,13 +2,14 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
+using Facepunch;
 using Newtonsoft.Json;
 using Oxide.Core.Plugins;
 using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.1.2")]
+    [Info("Building Workbench", "MJSU", "1.2.0")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -17,26 +18,30 @@ namespace Oxide.Plugins
 
         private PluginConfig _pluginConfig; //Plugin Config
 
-        private TriggerBase _triggerBase;
-        private GameObject _object;
+        private WorkbenchBehavior _wb;
+        private GameObject _go;
+        private BuildingWorkbenchTrigger _tb;
 
         private const string UsePermission = "buildingworkbench.use";
-        private const string CancelCraftIgnorePermission = "buildingworkbench.cancelcraftignore";
+        private const string CancelCraftPermission = "buildingworkbench.cancelcraft";
         private const string AccentColor = "#de8732";
 
         private readonly List<ulong> _notifiedPlayer = new List<ulong>();
-        private readonly Hash<ulong, int> _playerLevel = new Hash<ulong, int>();
+        private readonly Hash<ulong, Hash<uint, BuildingData>> _playerData = new Hash<ulong, Hash<uint, BuildingData>>();
+        private readonly Hash<uint, BuildingData> _buildingData = new Hash<uint, BuildingData>();
 
-        private Coroutine _routine;
-
-        private bool _init;
+        //private static BuildingWorkbench _ins;
         #endregion
 
         #region Setup & Loading
         private void Init()
         {
+            //_ins = this;
             permission.RegisterPermission(UsePermission, this);
-            permission.RegisterPermission(CancelCraftIgnorePermission, this);
+            permission.RegisterPermission(CancelCraftPermission, this);
+            
+            Unsubscribe(nameof(OnEntitySpawned));
+            Unsubscribe(nameof(OnEntityKill));
         }
         
         protected override void LoadDefaultMessages()
@@ -45,7 +50,7 @@ namespace Oxide.Plugins
             {
                 [LangKeys.Chat] = $"<color=#bebebe>[<color={AccentColor}>{Title}</color>] {{0}}</color>",
                 [LangKeys.Notification] = "Your workbench range has been increased to work inside your building",
-                [LangKeys.CraftCanceled] = "Your crafting has been canceled because you left the building"
+                [LangKeys.CraftCanceled] = "Your workbench level has changed. Crafts that required a higher level have been cancelled."
             }, this);
         }
         
@@ -64,149 +69,176 @@ namespace Oxide.Plugins
 
         private void OnServerInitialized()
         {
-             _object = new GameObject("BuildingWorkbenchObject");
-             _triggerBase = _object.AddComponent<TriggerBase>();
+            if (_pluginConfig.BaseDistance < 3f)
+            {
+                PrintWarning("Distance from base to be considered inside building (Meters) cannot be less than 3 meters");
+                _pluginConfig.BaseDistance = 3f;
+            }
             
-            
+            _go = new GameObject("BuildingWorkbenchObject");
+            _wb = _go.AddComponent<WorkbenchBehavior>();
+            _tb = _go.AddComponent<BuildingWorkbenchTrigger>();
+
             foreach (BasePlayer player in BasePlayer.activePlayerList)
             {
                 OnPlayerConnected(player);
             }
-            
-            InvokeHandler.Instance.InvokeRepeating(StartUpdatingWorkbench, 1f, _pluginConfig.UpdateRate);
-            
-            _init = true;
+             
+            Subscribe(nameof(OnEntitySpawned));
+            Subscribe(nameof(OnEntityKill));
+             
+            _wb.InvokeRepeating(StartUpdatingWorkbench, 1f, _pluginConfig.UpdateRate);
         }
 
         private void OnPlayerConnected(BasePlayer player)
         {
-            if (player.triggers == null || !player.triggers.Contains(_triggerBase))
-            {
-                player.EnterTrigger(_triggerBase);
-            }
+            player.nextCheckTime = float.MaxValue;
+            player.EnterTrigger(_tb);
         }
-
+        
         private void OnPlayerDisconnected(BasePlayer player, string reason)
         {
-            player.LeaveTrigger(_triggerBase);
+            player.nextCheckTime = 0;
+            player.cachedCraftLevel = 0;
+            Hash<uint, BuildingData> playerData = _playerData[player.userID];
+            if (playerData != null)
+            {
+                foreach (BuildingData data in playerData.Values)
+                {
+                    data.LeaveBuilding(player);
+                }
+            }
+
+            _playerData.Remove(player.userID);
+            player.LeaveTrigger(_tb);
         }
 
         private void Unload()
         {
             foreach (BasePlayer player in BasePlayer.activePlayerList)
             {
-                player.LeaveTrigger(_triggerBase);
+                OnPlayerDisconnected(player, null);
             }
             
-            InvokeHandler.Instance.CancelInvoke(StartUpdatingWorkbench);
-            if (_routine != null)
-            {
-                InvokeHandler.Instance.StopCoroutine(_routine);
-            }
-            
-            GameObject.Destroy(_object);
+            _wb.CancelInvoke(StartUpdatingWorkbench);
+            _wb.StopAllCoroutines();
+
+            GameObject.Destroy(_go);
+            //_ins = null;
         }
         #endregion
 
         #region Workbench Handler
-
-        private void StartUpdatingWorkbench()
+        public void StartUpdatingWorkbench()
         {
             if (BasePlayer.activePlayerList.Count == 0)
             {
                 return;
             }
-            
-            _routine = InvokeHandler.Instance.StartCoroutine(HandleWorkbenchUpdate());
+
+            _wb.StartCoroutine(HandleWorkbenchUpdate());
         }
 
-        private IEnumerator HandleWorkbenchUpdate()
+        public IEnumerator HandleWorkbenchUpdate()
         {
-            Hash<uint, int> benchCache = new Hash<uint, int>();
+            float frameWait = 0;
             for (int i = 0; i < BasePlayer.activePlayerList.Count; i++)
             {
                 BasePlayer player = BasePlayer.activePlayerList[i];
-                yield return null;
 
                 if (!HasPermission(player, UsePermission))
                 {
+                    if (player.nextCheckTime == float.MaxValue)
+                    {
+                        player.nextCheckTime = 0;
+                        player.cachedCraftLevel = 0;
+                    }
+                    
                     continue;
                 }
-                
-                UpdatePlayerPriv(player, benchCache);
+
+                UpdatePlayerPriv(player);
+
+                float waitForFrames = Performance.report.frameRate * _pluginConfig.UpdateRate / BasePlayer.activePlayerList.Count * 0.90f;
+                if (waitForFrames < 1)
+                {
+                    frameWait += waitForFrames;
+                    if (frameWait >= 1)
+                    {
+                        frameWait = 0;
+                        yield return null;
+                    }
+                    
+                    continue;
+                }
+
+                yield return null;
             }
         }
 
-        private void UpdatePlayerPriv(BasePlayer player, Hash<uint, int> cache = null)
+        public void UpdatePlayerPriv(BasePlayer player)
         {
-            BuildingPrivlidge priv = player.GetBuildingPrivilege();
-            if (priv == null || !priv.IsAuthed(player))
+            List<uint> currentBuildings = Pool.GetList<uint>();
+            GetNearbyAuthorizedBuildings(player, currentBuildings);
+            Hash<uint, BuildingData> playerData = GetPlayerData(player.userID);
+            
+            List<uint> leftBuildings = Pool.GetList<uint>();
+            foreach (uint buildingId in playerData.Keys)
             {
-                if (_playerLevel[player.userID] != 0)
+                if (!currentBuildings.Contains(buildingId))
                 {
-                    UpdatePlayerBench(player, 0, 0f);
-                    OnPlayerLeftBuilding(player);
+                    leftBuildings.Add(buildingId);
                 }
-                
+            }
+
+            foreach (uint leftBuilding in leftBuildings)
+            {
+                OnPlayerLeftBuilding(player, leftBuilding);
+            }
+            
+            foreach (uint currentBuilding in currentBuildings)
+            {
+                if (!playerData.ContainsKey(currentBuilding))
+                {
+                    OnPlayerEnterBuilding(player, currentBuilding);
+                }
+            }
+
+            UpdatePlayerWorkbenchLevel(player);
+            
+            Pool.FreeList(ref currentBuildings);
+            Pool.FreeList(ref leftBuildings);
+        }
+
+        public void OnPlayerEnterBuilding(BasePlayer player, uint buildingId)
+        {
+            BuildingData building = GetBuildingData(buildingId);
+            building.EnterBuilding(player);
+            Hash<uint, BuildingData> playerBuildings = GetPlayerData(player.userID);
+            playerBuildings[buildingId] = building;
+        }
+
+        public void OnPlayerLeftBuilding(BasePlayer player, uint buildingId)
+        {
+            Hash<uint, BuildingData> playerBuildings = GetPlayerData(player.userID);
+            if (!playerBuildings.Remove(buildingId))
+            {
                 return;
             }
 
-            int level;
-            if (cache != null && cache.ContainsKey(priv.buildingID))
+            if (player.inventory.crafting.queue.Count != 0 && HasPermission(player, CancelCraftPermission))
             {
-                level = cache[priv.buildingID];
-            }
-            else
-            {
-                level = GetBuildingWorkbenchLevel(priv.buildingID);
-                if (cache != null)
+                bool cancelled = false;
+                foreach (ItemCraftTask task in player.inventory.crafting.queue)
                 {
-                    cache[priv.buildingID] = level;
-                }
-            }
-
-            UpdatePlayerBench(player, level, _pluginConfig.UpdateRate);
-        }
-
-        private void UpdatePlayerBench(BasePlayer player, int level, float checkOffset)
-        {
-            player.nextCheckTime = Time.realtimeSinceStartup + checkOffset + .5f;
-            player.cachedCraftLevel = level;
-            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench1, level == 1);
-            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench2, level == 2);
-            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench3, level == 3);
-            player.SendNetworkUpdateImmediate();
-            _playerLevel[player.userID] = level;
-        }
-
-        private void UpdateNearbyPlayers(Vector3 pos, uint buildingId, BasePlayer player = null)
-        {
-            NextTick(() =>
-            {
-                int level = GetBuildingWorkbenchLevel(buildingId);
-                float duration = level == 0 ? 0 : _pluginConfig.UpdateRate;
-                BuildingPrivlidge priv = BuildingManager.server.GetBuilding(buildingId)?.GetDominatingBuildingPrivilege();
-                if (priv == null)
-                {
-                    return;
-                }
-
-                foreach (BasePlayer buildingPlayer in BaseNetworkable.GetConnectionsWithin(pos, 50f).Select(c => (BasePlayer)c.player))
-                {
-                    if (priv.IsAuthed(buildingPlayer))
+                    if (player.cachedCraftLevel < task.blueprint.workbenchLevelRequired)
                     {
-                        UpdatePlayerBench(buildingPlayer, level, duration);
+                        player.inventory.crafting.CancelTask(task.taskUID, true);
+                        cancelled = true;
                     }
                 }
-            });
-        }
-
-        private void OnPlayerLeftBuilding(BasePlayer player)
-        {
-            if (_pluginConfig.CancelCraft && !HasPermission(player, CancelCraftIgnorePermission) && player.inventory.crafting.queue.Count != 0)
-            {
-                player.inventory.crafting.CancelAll(true);
-                if (_pluginConfig.CancelCraftNotification)
+                
+                if (cancelled && _pluginConfig.CancelCraftNotification)
                 {
                     Chat(player, Lang(LangKeys.CraftCanceled, player));
                 }
@@ -215,31 +247,19 @@ namespace Oxide.Plugins
         #endregion
 
         #region Oxide Hooks
-        private void OnEntityLeave(TriggerBase trigger, BaseEntity entity)
-        {
-            BasePlayer player = entity.ToPlayer();
-            if (player != null && trigger == _triggerBase)
-            {
-                player.EnterTrigger(_triggerBase);
-            }
-        }
-
         private void OnEntitySpawned(Workbench bench)
         {
-            if (!_init)
+            BuildingData building = GetBuildingData(bench.buildingID);
+            building.OnBenchBuilt(bench);
+            UpdateBuildingPlayers(building);
+            
+            if (!_pluginConfig.BuiltNotification)
             {
                 return;
             }
             
             BasePlayer player = BasePlayer.FindByID(bench.OwnerID);
             if (player == null)
-            {
-                return;
-            }
-            
-            UpdateNearbyPlayers(bench.transform.position, bench.buildingID, player);
-
-            if (!_pluginConfig.EnableNotifications)
             {
                 return;
             }
@@ -263,88 +283,249 @@ namespace Oxide.Plugins
 
         private void OnEntityKill(Workbench bench)
         {
-            if (!_init)
-            {
-                return;
-            }
-            
-            UpdateNearbyPlayers(bench.transform.position, bench.buildingID);
+            BuildingData building = GetBuildingData(bench.buildingID);
+            building.OnBenchKilled(bench);
+            UpdateBuildingPlayers(building);
+        }
+        
+        private void OnEntityKill(BuildingPrivlidge tc)
+        {
+            OnCupboardClearList(tc);
         }
         
         private void OnCupboardAuthorize(BuildingPrivlidge privilege, BasePlayer player)
         {
-            OnAuthChanged(player);
+            OnPlayerEnterBuilding(player, privilege.buildingID);
+            UpdatePlayerWorkbenchLevel(player);
         }
         
         private void OnCupboardDeauthorize(BuildingPrivlidge privilege, BasePlayer player)
         {
-            OnAuthChanged(player);
-        }
-        
-        private void OnAuthChanged(BasePlayer player)
-        {
-            NextTick(() =>
-            {
-                UpdatePlayerPriv(player);
-            });
+            OnPlayerLeftBuilding(player, privilege.buildingID);
+            UpdatePlayerWorkbenchLevel(player);
         }
 
-        private void OnCupboardClearList(BuildingPrivlidge privilege, BasePlayer player)
+        private void OnCupboardClearList(BuildingPrivlidge privilege)
         {
-            NextTick(() =>
+            BuildingData data = GetBuildingData(privilege.buildingID);
+            foreach (BasePlayer player in data.Players.ToList())
             {
-                Hash<uint, int> cache = new Hash<uint, int>();
-                foreach (BasePlayer nearbyPlayers in BaseNetworkable.GetConnectionsWithin(privilege.transform.position, 50f).Select(c => (BasePlayer)c.player))
-                {
-                    UpdatePlayerPriv(nearbyPlayers, cache);
-                }
-            });
+                OnPlayerLeftBuilding(player, privilege.buildingID);
+                UpdatePlayerWorkbenchLevel(player);
+            }
+        }
+        
+        private void OnEntityEnter(TriggerWorkbench trigger, BasePlayer player)
+        {
+            if (player.IsNpc)
+            {
+                return;
+            }
+            
+            UpdatePlayerWorkbenchLevel(player);
+        }
+        
+        private void OnEntityLeave(TriggerWorkbench trigger, BasePlayer player)
+        {
+            if (player.IsNpc)
+            {
+                return;
+            }
+            
+            UpdatePlayerWorkbenchLevel(player);
         }
         #endregion
 
         #region Helper Methods
-
-        private int GetBuildingWorkbenchLevel(uint buildingId)
+        public void UpdateBuildingPlayers(BuildingData building)
         {
-            return BuildingManager.server.GetBuilding(buildingId)?.decayEntities
-                .OfType<Workbench>()
-                .Select(bench => bench.Workbenchlevel)
-                .Concat(new[] {0})
-                .Max() ?? 0;
+            foreach (BasePlayer player in building.Players)
+            {
+                UpdatePlayerWorkbenchLevel(player);
+            }
+        }
+        
+        public void UpdatePlayerWorkbenchLevel(BasePlayer player)
+        {
+            float level = 0;
+            Hash<uint, BuildingData> playerBuildings = _playerData[player.userID];
+            if (playerBuildings != null)
+            {
+                foreach (BuildingData building in playerBuildings.Values)
+                {
+                    level = Mathf.Max(level, building.GetBuildingLevel());
+                }
+            }
+            
+            if (level != 3 && player.triggers != null)
+            {
+                foreach (TriggerWorkbench workbench in player.triggers.OfType<TriggerWorkbench>())
+                {
+                    level = Mathf.Max(level, workbench.parentBench.Workbenchlevel);
+                }
+            }
+
+            if (player.cachedCraftLevel == level)
+            {
+                return;
+            }
+
+            player.cachedCraftLevel = level;
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench1, player.cachedCraftLevel == 1f);
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench2, player.cachedCraftLevel == 2f);
+            player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench3, player.cachedCraftLevel == 3f);
+            player.SendNetworkUpdateImmediate();
+        }
+        
+        public Hash<uint, BuildingData> GetPlayerData(ulong playerId)
+        {
+            Hash<uint, BuildingData> playerBuildings = _playerData[playerId];
+            if (playerBuildings == null)
+            {
+                playerBuildings = new Hash<uint, BuildingData>();
+                _playerData[playerId] = playerBuildings;
+            }
+
+            return playerBuildings;
+        }
+        
+        public BuildingData GetBuildingData(uint buildingId)
+        {
+            BuildingData data = _buildingData[buildingId];
+            if (data == null)
+            {
+                data = new BuildingData(buildingId);
+                _buildingData[buildingId] = data;
+            }
+
+            return data;
+        }
+        
+        public void GetNearbyAuthorizedBuildings(BasePlayer player, List<uint> authorizedPrivs)
+        {
+            List<uint> processedBuildings = Pool.GetList<uint>();
+            OBB obb = player.WorldSpaceBounds();
+            List<BuildingBlock> blocks = Facepunch.Pool.GetList<BuildingBlock>();
+            float baseDistance = _pluginConfig.BaseDistance;
+            Vis.Entities(obb.position, baseDistance + obb.extents.magnitude, blocks, Rust.Layers.Construction);
+            for (int index = 0; index < blocks.Count; index++)
+            {
+                BuildingBlock block = blocks[index];
+                if (processedBuildings.Contains(block.buildingID) || !(obb.Distance(block.WorldSpaceBounds()) <= baseDistance))
+                {
+                    continue;
+                }
+                
+                processedBuildings.Add(block.buildingID);
+                BuildingPrivlidge priv = block.GetBuilding()?.GetDominatingBuildingPrivilege();
+                if (priv == null || !priv.IsAuthed(player))
+                {
+                    continue;
+                }
+                
+                authorizedPrivs.Add(priv.buildingID);
+            }
+            
+            Pool.FreeList(ref blocks);
+            Pool.FreeList(ref processedBuildings);
         }
 
-        private void Chat(BasePlayer player, string format, params object[] args) => PrintToChat(player, Lang(LangKeys.Chat, player, format), args);
+        public void Chat(BasePlayer player, string format, params object[] args) => PrintToChat(player, Lang(LangKeys.Chat, player, format), args);
         
-        private bool HasPermission(BasePlayer player, string perm) => permission.UserHasPermission(player.UserIDString, perm);
+        public bool HasPermission(BasePlayer player, string perm) => permission.UserHasPermission(player.UserIDString, perm);
         
-        private string Lang(string key, BasePlayer player = null, params object[] args) => string.Format(lang.GetMessage(key, this, player?.UserIDString), args);
+        public string Lang(string key, BasePlayer player = null, params object[] args) => string.Format(lang.GetMessage(key, this, player?.UserIDString), args);
+        #endregion
+
+        #region Building Data
+        public class BuildingData
+        {
+            public uint BuildingId { get; }
+            public Workbench BestWorkbench { get; set; }
+            public List<BasePlayer> Players { get; } = new List<BasePlayer>();
+            public List<Workbench> Workbenches { get; }
+
+            public BuildingData(uint buildingId)
+            {
+                BuildingId = buildingId;
+                Workbenches = BuildingManager.server.GetBuilding(buildingId)?.decayEntities.OfType<Workbench>().ToList() ?? new List<Workbench>();
+                UpdateBestBench();
+            }
+
+            public void EnterBuilding(BasePlayer player)
+            {
+                Players.Add(player);
+            }
+
+            public void LeaveBuilding(BasePlayer player)
+            {
+                Players.Remove(player);
+            }
+
+            public void OnBenchBuilt(Workbench workbench)
+            {
+                Workbenches.Add(workbench);
+                if (BestWorkbench != null && workbench.Workbenchlevel < BestWorkbench.Workbenchlevel)
+                {
+                    return;
+                }
+
+                BestWorkbench = workbench;
+            }
+
+            public void OnBenchKilled(Workbench workbench)
+            {
+                Workbenches.Remove(workbench);
+                UpdateBestBench();
+            }
+            
+            public float GetBuildingLevel()
+            {
+                return BestWorkbench?.Workbenchlevel ?? 0f;
+            }
+
+            private void UpdateBestBench()
+            {
+                BestWorkbench = Workbenches.OrderByDescending(w => w.Workbenchlevel).FirstOrDefault();
+            }
+        }
         #endregion
 
         #region Classes
         private class PluginConfig
         {
             [DefaultValue(true)]
-            [JsonProperty(PropertyName = "Enable Notifications")]
-            public bool EnableNotifications { get; set; }
-            
-            [DefaultValue(false)]
-            [JsonProperty(PropertyName = "Cancel craft when leaving building")]
-            public bool CancelCraft { get; set; }
-            
+            [JsonProperty(PropertyName = "Display workbench built notification")]
+            public bool BuiltNotification { get; set; }
+
             [DefaultValue(true)]
-            [JsonProperty(PropertyName = "Cancel craft notification")]
+            [JsonProperty(PropertyName = "Display cancel craft notification")]
             public bool CancelCraftNotification { get; set; }
             
             [DefaultValue(3f)]
-            [JsonProperty(PropertyName = "Update Rate (Seconds)")]
+            [JsonProperty(PropertyName = "Inside building check frequency (Seconds)")]
             public float UpdateRate { get; set; }
+            
+            [DefaultValue(16f)]
+            [JsonProperty(PropertyName = "Distance from base to be considered inside building (Meters)")]
+            public float BaseDistance { get; set; }
         }
-        
+
         private class LangKeys
         {
-            public const string Chat = "Chat";
-            public const string Notification = "Notification";
-            public const string CraftCanceled = "CraftCanceled";
+            public const string Chat = nameof(Chat);
+            public const string Notification = nameof(Notification);
+            public const string CraftCanceled = nameof(CraftCanceled) + "V1";
+        }
+
+        public class WorkbenchBehavior : FacepunchBehaviour
+        {
+            
+        }
+
+        public class BuildingWorkbenchTrigger : TriggerBase
+        {
+            
         }
         #endregion
     }
