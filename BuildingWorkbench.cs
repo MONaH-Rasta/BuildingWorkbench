@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.1.0")]
+    [Info("Building Workbench", "MJSU", "1.1.1")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -21,7 +21,7 @@ namespace Oxide.Plugins
         private GameObject _object;
 
         private const string UsePermission = "buildingworkbench.use";
-        private const string CancelCraftIgnorePermission = "buildingworkbench.cancraftignore";
+        private const string CancelCraftIgnorePermission = "buildingworkbench.cancelcraftignore";
         private const string AccentColor = "#de8732";
 
         private readonly List<ulong> _notifiedPlayer = new List<ulong>();
