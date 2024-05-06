@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Building Workbench", "MJSU", "1.0.2")]
+    [Info("Building Workbench", "MJSU", "1.0.3")]
     [Description("Extends the range of the workbench to work inside the entire building")]
     public class BuildingWorkbench : RustPlugin
     {
@@ -36,7 +36,7 @@ namespace Oxide.Plugins
             _ins = this;
             permission.RegisterPermission(UsePermission, this);
 
-            _object = new GameObject();
+            _object = new GameObject("BuildingWorkbenchObject");
             _triggerBase = _object.AddComponent<TriggerBase>();
         }
         
@@ -89,13 +89,18 @@ namespace Oxide.Plugins
                 return;
             }
 
-            player.EnterTrigger(_triggerBase);
+            if (!player.triggers?.Contains(_triggerBase) ?? false)
+            {
+                player.EnterTrigger(_triggerBase);
+            }
+
             player.gameObject.AddComponent<WorkbenchBehavior>();
         }
 
         private void OnPlayerDisconnected(BasePlayer player, string reason)
         {
             player.gameObject.GetComponent<WorkbenchBehavior>()?.DoDestroy();
+            player.LeaveTrigger(_triggerBase);
         }
 
         private void Unload()
@@ -106,6 +111,103 @@ namespace Oxide.Plugins
             }
             GameObject.Destroy(_object);
             _ins = null;
+        }
+        #endregion
+
+        #region Permission Hooks
+        private void OnUserPermissionGranted(string playerId, string permName)
+        {
+            if (permName != UsePermission)
+            {
+                return;
+            }
+            
+            HandleUserChanges(playerId);
+        }
+        
+        private void OnUserPermissionRevoked(string playerId, string permName)
+        {
+            if (permName != UsePermission)
+            {
+                return;
+            }
+            
+            HandleUserChanges(playerId);
+        }
+        
+        private void OnUserGroupAdded(string playerId, string groupName)
+        {
+            HandleUserChanges(playerId);
+        }
+        
+        private void OnUserGroupRemoved(string playerId, string groupName)
+        {
+            HandleUserChanges(playerId);
+        }
+
+        private void OnGroupPermissionGranted(string groupName, string permName)
+        {
+            if (permName != UsePermission)
+            {
+                return;
+            }
+
+            NextTick(() =>
+            {
+                foreach (BasePlayer player in BasePlayer.activePlayerList)
+                {
+                    HandleUserChanges(player);
+                }
+            });
+        }
+        
+        private void OnGroupPermissionRevoked(string groupName, string permName)
+        {
+            if (permName != UsePermission)
+            {
+                return;
+            }
+            
+            NextTick(() =>
+            {
+                foreach (BasePlayer player in BasePlayer.activePlayerList)
+                {
+                    HandleUserChanges(player);
+                }
+            });
+        }
+
+        private void HandleUserChanges(string id)
+        {
+            NextTick(() =>
+            {
+                BasePlayer player = BasePlayer.Find(id);
+                if (player == null)
+                {
+                    return;
+                }
+
+                HandleUserChanges(player);
+            });
+        }
+
+        private void HandleUserChanges(BasePlayer player)
+        {
+            bool hasPerm = HasPermission(player, UsePermission);
+            bool hasBehavior = player.GetComponent<WorkbenchBehavior>() != null;
+            if (hasPerm == hasBehavior)
+            {
+                return;
+            }
+
+            if (hasBehavior)
+            {
+                OnPlayerDisconnected(player, string.Empty);
+            }
+            else
+            {
+                OnPlayerInit(player);
+            }
         }
         #endregion
 
