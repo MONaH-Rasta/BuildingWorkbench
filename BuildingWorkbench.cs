@@ -32,7 +32,7 @@ namespace Oxide.Plugins
         private readonly Hash<uint, BuildingData> _buildingData = new();
 
         private PhysicsScene _physics;
-        
+
         //private static BuildingWorkbench _ins;
         #endregion
 
@@ -42,11 +42,11 @@ namespace Oxide.Plugins
             //_ins = this;
             permission.RegisterPermission(UsePermission, this);
             permission.RegisterPermission(CancelCraftPermission, this);
-            
+
             Unsubscribe(nameof(OnEntitySpawned));
             Unsubscribe(nameof(OnEntityKill));
         }
-        
+
         protected override void LoadDefaultMessages()
         {
             lang.RegisterMessages(new Dictionary<string, string>
@@ -56,7 +56,7 @@ namespace Oxide.Plugins
                 [LangKeys.CraftCanceled] = "Your workbench level has changed. Crafts that required a higher level have been cancelled."
             }, this);
         }
-        
+
         protected override void LoadDefaultConfig()
         {
             PrintWarning("Loading Default Config");
@@ -78,7 +78,7 @@ namespace Oxide.Plugins
                 PrintWarning("Distance from base to be considered inside building (Meters) cannot be less than 3 meters");
                 _pluginConfig.BaseDistance = 3f;
             }
-            
+
             _go = new($"{Title}Object");
             _wb = _go.AddComponent<WorkbenchBehavior>();
             _tb = _go.AddComponent<BuildingWorkbenchTrigger>();
@@ -87,9 +87,9 @@ namespace Oxide.Plugins
             {
                 OnPlayerConnected(player);
             }
-            
+
             _wb.InvokeRepeating(StartUpdatingWorkbench, 1f, _pluginConfig.UpdateRate);
-             
+
             Subscribe(nameof(OnEntitySpawned));
             Subscribe(nameof(OnEntityKill));
         }
@@ -99,7 +99,7 @@ namespace Oxide.Plugins
             player.nextCheckTime = float.MaxValue;
             player.EnterTrigger(_tb);
         }
-        
+
         private void OnPlayerDisconnected(BasePlayer player, string reason)
         {
             player.nextCheckTime = 0;
@@ -141,7 +141,7 @@ namespace Oxide.Plugins
             {
                 return;
             }
-            
+
             _wb.StartCoroutine(HandleWorkbenchUpdate());
         }
 
@@ -159,7 +159,7 @@ namespace Oxide.Plugins
                         player.nextCheckTime = 0;
                         player.cachedCraftLevel = 0;
                     }
-                    
+
                     continue;
                 }
 
@@ -175,7 +175,7 @@ namespace Oxide.Plugins
                 }
 
                 data.Position = player.transform.position;
-                
+
                 UpdatePlayerBuildings(player, data);
 
                 float waitForFrames = Performance.report.frameRate * _pluginConfig.UpdateRate / BasePlayer.activePlayerList.Count * 0.9f;
@@ -232,9 +232,9 @@ namespace Oxide.Plugins
             }
 
             UpdatePlayerWorkbenchLevel(player);
-            
+
             //Puts($"{nameof(BuildingData)}.{nameof(UpdatePlayerPriv)} {player.displayName} In: {string.Join(",", currentBuildings.Select(b => b.ToString().ToArray()))} Left: {string.Join(",", leftBuildings.Select(b => b.ToString().ToArray()))}");
-            
+
             Pool.FreeUnmanaged(ref currentBuildings);
             Pool.FreeUnmanaged(ref leftBuildings);
         }
@@ -268,7 +268,7 @@ namespace Oxide.Plugins
                         canceled = true;
                     }
                 }
-                
+
                 if (canceled && _pluginConfig.CancelCraftNotification)
                 {
                     Chat(player, Lang(LangKeys.CraftCanceled, player));
@@ -286,12 +286,12 @@ namespace Oxide.Plugins
                 BuildingData building = GetBuildingData(bench.buildingID);
                 building.OnBenchBuilt(bench);
                 UpdateBuildingPlayers(building);
-            
+
                 if (!_pluginConfig.BuiltNotification)
                 {
                     return;
                 }
-            
+
                 BasePlayer player = BasePlayer.FindByID(bench.OwnerID);
                 if (!player)
                 {
@@ -302,14 +302,14 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-            
+
                 if (_notifiedPlayer.Contains(player.userID))
                 {
                     return;
                 }
-            
+
                 _notifiedPlayer.Add(player.userID);
-            
+
                 if (GameTipAPI == null)
                 {
                     Chat(player, Lang(LangKeys.Notification, player));
@@ -327,18 +327,18 @@ namespace Oxide.Plugins
             building.OnBenchKilled(bench);
             UpdateBuildingPlayers(building);
         }
-        
+
         private void OnEntityKill(BuildingPrivlidge tc)
         {
             OnCupboardClearList(tc);
         }
-        
+
         private void OnCupboardAuthorize(BuildingPrivlidge privilege, BasePlayer player)
         {
             OnPlayerEnterBuilding(player, privilege.buildingID);
             UpdatePlayerWorkbenchLevel(player);
         }
-        
+
         private void OnCupboardDeauthorize(BuildingPrivlidge privilege, BasePlayer player)
         {
             OnPlayerLeftBuilding(player, privilege.buildingID);
@@ -355,7 +355,7 @@ namespace Oxide.Plugins
                 UpdatePlayerWorkbenchLevel(player);
             }
         }
-        
+
         private void OnEntityEnter(TriggerWorkbench trigger, BasePlayer player)
         {
             if (!player.IsNpc)
@@ -363,7 +363,7 @@ namespace Oxide.Plugins
                 UpdatePlayerWorkbenchLevel(player);
             }
         }
-        
+
         private void OnEntityLeave(TriggerWorkbench trigger, BasePlayer player)
         {
             if (!player.IsNpc)
@@ -374,16 +374,16 @@ namespace Oxide.Plugins
                 });
             }
         }
-        
+
         private void OnEntityLeave(BuildingWorkbenchTrigger trigger, BasePlayer player)
         {
             if (player.IsNpc)
             {
                 return;
             }
-            
+
             //_ins.Puts($"{nameof(BuildingWorkbench)}.{nameof(OnEntityLeave)} {nameof(BuildingWorkbenchTrigger)} {player.displayName}");
-            
+
             NextTick(() =>
             {
                 player.EnterTrigger(_tb);
@@ -400,7 +400,7 @@ namespace Oxide.Plugins
                 UpdatePlayerWorkbenchLevel(player);
             }
         }
-        
+
         public void UpdatePlayerWorkbenchLevel(BasePlayer player)
         {
             byte level = 0;
@@ -411,7 +411,7 @@ namespace Oxide.Plugins
                     level = Math.Max(level, building.GetBuildingLevel());
                 }
             }
-            
+
             if (level != 3 && player.triggers != null)
             {
                 for (int index = 0; index < player.triggers.Count; index++)
@@ -437,7 +437,7 @@ namespace Oxide.Plugins
             player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench3, level == 3);
             player.SendNetworkUpdateImmediate();
         }
-        
+
         public PlayerData GetPlayerData(ulong playerId)
         {
             if (_playerData[playerId] is not PlayerData data)
@@ -447,7 +447,7 @@ namespace Oxide.Plugins
 
             return data;
         }
-        
+
         public BuildingData GetBuildingData(uint buildingId)
         {
             if (_buildingData[buildingId] is not BuildingData data)
@@ -460,7 +460,7 @@ namespace Oxide.Plugins
 
         private readonly RaycastHit[] _hits = new RaycastHit[256];
         private readonly List<uint> _processedBuildings = new();
-        
+
         public void GetNearbyAuthorizedBuildingsFast(BasePlayer player, List<uint> authorizedPrivs)
         {
             List<uint> processedBuildings = _processedBuildings;
@@ -475,24 +475,24 @@ namespace Oxide.Plugins
                 {
                     continue;
                 }
-                
+
                 if (processedBuildings.Contains(block.buildingID) || obb.Distance(block.WorldSpaceBounds()) > baseDistance)
                 {
                     continue;
                 }
-                
+
                 processedBuildings.Add(block.buildingID);
                 BuildingPrivlidge priv = block.GetBuilding()?.GetDominatingBuildingPrivilege();
                 if (!priv || !priv.IsAuthed(player))
                 {
                     continue;
                 }
-                
+
                 authorizedPrivs.Add(priv.buildingID);
             }
             processedBuildings.Clear();
         }
-        
+
         public void GetNearbyAuthorizedBuildings(BasePlayer player, List<uint> authorizedPrivs)
         {
             List<uint> processedBuildings = _processedBuildings;
@@ -507,19 +507,19 @@ namespace Oxide.Plugins
                 {
                     continue;
                 }
-                
+
                 if (processedBuildings.Contains(block.buildingID) || obb.Distance(block.WorldSpaceBounds()) > baseDistance)
                 {
                     continue;
                 }
-                
+
                 processedBuildings.Add(block.buildingID);
                 BuildingPrivlidge priv = block.GetBuilding()?.GetDominatingBuildingPrivilege();
                 if (!priv || !priv.IsAuthed(player))
                 {
                     continue;
                 }
-                
+
                 authorizedPrivs.Add(priv.buildingID);
             }
 
@@ -527,14 +527,14 @@ namespace Oxide.Plugins
         }
 
         public void Chat(BasePlayer player, string message) => PrintToChat(player, Lang(LangKeys.Chat, player, message));
-        
+
         public bool HasPermission(BasePlayer player, string perm) => permission.UserHasPermission(player.UserIDString, perm);
-        
+
         private string Lang(string key, BasePlayer player = null)
         {
             return lang.GetMessage(key, this, player?.UserIDString);
         }
-        
+
         private string Lang(string key, BasePlayer player = null, params object[] args)
         {
             try
@@ -587,7 +587,7 @@ namespace Oxide.Plugins
                 Workbenches.Remove(workbench);
                 UpdateBestBench();
             }
-            
+
             public byte GetBuildingLevel()
             {
                 if (!BestWorkbench)
@@ -623,19 +623,19 @@ namespace Oxide.Plugins
             [DefaultValue(true)]
             [JsonProperty(PropertyName = "Display cancel craft notification")]
             public bool CancelCraftNotification { get; set; }
-            
+
             [DefaultValue(3f)]
             [JsonProperty(PropertyName = "Inside building check frequency (Seconds)")]
             public float UpdateRate { get; set; }
-            
+
             [DefaultValue(false)]
             [JsonProperty(PropertyName = "Enable Fast Building Check (Only checks above and below a player)")]
             public bool FastBuildingCheck { get; set; }
-            
+
             [DefaultValue(16f)]
             [JsonProperty(PropertyName = "Distance from base to be considered inside building (Meters)")]
             public float BaseDistance { get; set; }
-            
+
             [DefaultValue(5)]
             [JsonProperty(PropertyName = "Required distance from last update (Meters)")]
             public float RequiredDistance { get; set; }
@@ -656,12 +656,12 @@ namespace Oxide.Plugins
 
         public class WorkbenchBehavior : FacepunchBehaviour
         {
-            
+
         }
 
         public class BuildingWorkbenchTrigger : TriggerBase
         {
-            
+
         }
         #endregion
     }
