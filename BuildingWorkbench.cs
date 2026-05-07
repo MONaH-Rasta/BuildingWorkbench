@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins;
 
-[Info("Building Workbench", "MJSU", "1.4.2")]
+[Info("Building Workbench", "MJSU", "1.4.3")]
 [Description("Extends the range of the workbench to work inside the entire building")]
 public class BuildingWorkbench : RustPlugin
 {
@@ -446,6 +446,7 @@ public class BuildingWorkbench : RustPlugin
     public void UpdatePlayerWorkbenchLevel(BasePlayer player)
     {
         byte level = 0;
+        Workbench workbench = null;
 
         PlayerData playerData = GetPlayerData(player.userID);
         Dictionary<uint, BuildingData> playerBuildings = playerData.Buildings;
@@ -453,7 +454,12 @@ public class BuildingWorkbench : RustPlugin
         {
             foreach (BuildingData building in playerBuildings.Values)
             {
-                level = Math.Max(level, building.GetWorkbenchLevel());
+                byte buildingLevel = building.GetWorkbenchLevel();
+                if (buildingLevel > level)
+                {
+                    level = buildingLevel;
+                    workbench = building.BestWorkbench;
+                }
             }
         }
 
@@ -462,26 +468,33 @@ public class BuildingWorkbench : RustPlugin
             for (int index = 0; index < player.triggers.Count; index++)
             {
                 TriggerWorkbench trigger = player.triggers[index] as TriggerWorkbench;
-                if (trigger)
+                if (trigger && trigger.parentBench)
                 {
-                    level = Math.Max(level, (byte)trigger.parentBench.Workbenchlevel);
+                    byte workbenchLevel = (byte)trigger.parentBench.Workbenchlevel;
+                    if (workbenchLevel > level)
+                    {
+                        level = workbenchLevel;
+                        workbench = trigger.parentBench;
+                    }
                 }
             }
         }
 
-        if ((byte)player.cachedCraftLevel == level && playerData.WorkbenchLevel == level)
+        if ((byte)player.cachedCraftLevel == level && playerData.WorkbenchLevel == level && player._cachedWorkbench == workbench)
         {
             return;
         }
 
-        //_ins.Puts($"{nameof(BuildingWorkbench)}.{nameof(UpdatePlayerWorkbenchLevel)} {player.displayName} -> {level}");
+        //Puts($"{nameof(BuildingWorkbench)}.{nameof(UpdatePlayerWorkbenchLevel)} A {player.displayName} -> {level} - {workbench?.net.ID} - {player.lastSentActiveWorkbenchId}");
         player.nextCheckTime = float.MaxValue;
         player.cachedCraftLevel = level;
+        player._cachedWorkbench = workbench;
         playerData.WorkbenchLevel = level;
         player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench1, level == 1);
         player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench2, level == 2);
         player.SetPlayerFlag(BasePlayer.PlayerFlags.Workbench3, level == 3);
         player.SendNetworkUpdateImmediate();
+        player.SendActiveWorkbenchIfChanged();
     }
 
     public bool TryGetPlayerBoat(BaseEntity entity, out PlayerBoat boat)
@@ -664,12 +677,7 @@ public class BuildingWorkbench : RustPlugin
 
         public byte GetWorkbenchLevel()
         {
-            if (!BestWorkbench)
-            {
-                return 0;
-            }
-
-            return (byte)BestWorkbench.Workbenchlevel;
+            return BestWorkbench ? (byte)BestWorkbench.Workbenchlevel : (byte)0;
         }
 
         private void UpdateBestBench()
